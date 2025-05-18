@@ -134,9 +134,7 @@ public class CameraHandlerPrincipal {
         }
     }
 
-    /**
-     * Inicia el streaming de imágenes térmicas desde una FLIR ONE o un emulador
-     */
+    // Inicia el streaming de imágenes térmicas desde una FLIR ONE o un emulador
     public synchronized void startStream(StreamDataListener listener) {
         this.streamDataListener = listener;
         if (camera == null || !camera.isConnected()) {
