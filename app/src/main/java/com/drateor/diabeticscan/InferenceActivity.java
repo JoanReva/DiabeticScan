@@ -27,7 +27,7 @@ public class InferenceActivity extends AppCompatActivity {
     private ImageView imageView;
     private TextView resultText;
     private Interpreter tflite;
-    private List<String> classLabels = Arrays.asList("ClaseA", "ClaseB", "ClaseC", "ClaseD"); // Cambia estos nombres
+    private List<String> classLabels = Arrays.asList("ClaseA", "ClaseB", "ClaseC", "ClaseD");
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

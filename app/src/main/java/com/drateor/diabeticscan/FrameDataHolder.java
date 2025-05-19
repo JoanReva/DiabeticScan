@@ -16,11 +16,11 @@ class FrameDataHolder {
 
     public final Bitmap msxBitmap;
     public final Bitmap dcBitmap;
-    public final String inforacion;
+    public final String informacion;
 
     FrameDataHolder(Bitmap msxBitmap, Bitmap dcBitmap, String informacion) {
         this.msxBitmap = msxBitmap;
         this.dcBitmap = dcBitmap;
-        this.inforacion = informacion;
+        this.informacion = informacion;
     }
 }

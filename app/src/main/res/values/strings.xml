@@ -38,6 +38,7 @@
     <!-- Descripciones de accesibilidad -->
     <string name="desc_msx_image">Imagen combinada infrarroja y visual</string>
     <string name="desc_photo_image">Imagen de la cámara visual</string>
+    <string name="desc_thermal_image">Imagen de la cámara térmica</string>
     <string name="desc_thermal_scale">Escala de colores térmicos</string>
     <string name="desc_capture_button">Capturar imagen térmica</string>
     <string name="desc_captured_image">Miniatura de la imagen capturada</string>

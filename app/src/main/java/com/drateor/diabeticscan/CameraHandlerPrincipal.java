@@ -150,13 +150,27 @@ public class CameraHandlerPrincipal {
         connectedStream.start(
                 unused -> {
                     streamer.update();
-
+                    //0 iron ---Flir
+                    //1 artic --- Flir
+                    //2 blackhot
+                    //3 bw -- Flir gris
+                    //4 coldest -- Flir
+                    //5 wheel_redhot
+                    //6 colorwheel6
+                    //7 colorwheel12
+                    //8 doublerainbow2
+                    //9 lava --- Flir
+                    //10 rainbow ---Flir
+                    //11 rainicHC
+                    //12 whitehot
+                    //13 Hottset -- FLir
                     final Bitmap[] thermalScaleBitmap = new Bitmap[1];
                     final String[] info = new String[1];
 
                     Palette palette = PaletteManager.getDefaultPalettes().get(10); // rainbow
 
                     streamer.withThermalImage(thermalImage -> {
+                        //TERMAL ONLY
                         Objects.requireNonNull(thermalImage.getFusion()).setFusionMode(FusionMode.THERMAL_ONLY);
                         thermalImage.setPalette(palette);
 

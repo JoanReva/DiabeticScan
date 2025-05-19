@@ -3,6 +3,7 @@ package com.drateor.diabeticscan;
 import android.app.AlertDialog;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
@@ -19,6 +20,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
@@ -30,6 +33,7 @@ import com.flir.thermalsdk.androidsdk.ThermalSdkAndroid;
 import com.flir.thermalsdk.androidsdk.live.connectivity.UsbPermissionHandler;
 import com.flir.thermalsdk.live.CommunicationInterface;
 import com.flir.thermalsdk.live.Identity;
+import com.flir.thermalsdk.live.connectivity.ConnectionStatusListener;
 import com.flir.thermalsdk.live.discovery.DiscoveredCamera;
 import com.flir.thermalsdk.live.discovery.DiscoveryEventListener;
 import com.flir.thermalsdk.log.ThermalLog;
@@ -39,6 +43,11 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.concurrent.LinkedBlockingQueue;
+
+import android.os.Vibrator;
+import android.os.VibrationEffect;
+
+import com.google.android.material.snackbar.Snackbar;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -55,8 +64,19 @@ public class MainActivity extends AppCompatActivity {
     private Bitmap ultimoMsxBitmap;
 
     private TextView informacion;
+    private Button connectButton, disconnectButton, nucButton, captureButton, pickButton;
+
     private ImageView msxImage, thermalScale, imagenCapturada;
-    private Button connectButton, disconnectButton, nucButton, captureButton;
+    private boolean isSwitchingToInference = false;
+    private boolean firstLaunch = true;
+    private boolean wasCameraConnected = false;
+
+    private Identity lastConnectedIdentity = null;
+    private boolean autoReconnectInProgress = false;
+    private boolean isCameraDisconnected = false;
+    private boolean isAutoRecoveryActive = false;
+    private final int RECONNECTION_TIMEOUT_MS = 7000;
+    private ActivityResultLauncher<Intent> pickImageLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -73,12 +93,34 @@ public class MainActivity extends AppCompatActivity {
         ThermalSdkAndroid.init(getApplicationContext(), ThermalLog.LogLevel.DEBUG);
         cameraHandler = new CameraHandlerPrincipal(this);
 
+        pickImageLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                        Uri selectedImageUri = result.getData().getData();
+                        if (selectedImageUri != null) {
+                            Intent intent = new Intent(this, InferenceActivity.class);
+                            intent.putExtra("imageUri", selectedImageUri.toString());
+                            startActivity(intent);
+                        }
+                    }
+                }
+        );
+
         initUI();
-        showInitialDialog();
+
+        if (firstLaunch) {
+            showInitialDialog();
+            firstLaunch = false;
+        }
     }
 
+
     private void initUI() {
-        msxImage = findViewById(R.id.image_msx);
+
+        captureButton = findViewById(R.id.button_capture);
+        pickButton = findViewById(R.id.button_pick);
+        msxImage = findViewById(R.id.image_thermal);
         thermalScale = findViewById(R.id.image_thermal_scale);
         imagenCapturada = findViewById(R.id.image_thumbnail);
         informacion = findViewById(R.id.text_info);
@@ -86,22 +128,121 @@ public class MainActivity extends AppCompatActivity {
         connectButton = findViewById(R.id.button_connect);
         disconnectButton = findViewById(R.id.button_disconnect);
         nucButton = findViewById(R.id.button_nuc);
-        captureButton = findViewById(R.id.button_capture);
 
         connectButton.setEnabled(false);
         disconnectButton.setEnabled(false);
         nucButton.setEnabled(false);
         captureButton.setEnabled(false);
+        pickButton.setEnabled(false);
 
+        pickButton.setOnClickListener(v -> abrirGaleria());
         captureButton.setOnClickListener(v -> snapShotImage());
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        Toast.makeText(this, "Cerrando conexión...", Toast.LENGTH_SHORT).show();
-        disconnect();
+
+        if (!isSwitchingToInference) {
+            wasCameraConnected = cameraHandler.getDeviceInfo() != null;
+            disconnect();
+        }
     }
+
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        isSwitchingToInference = false;
+        // Si antes estaba conectada pero ahora no, intenta reconectar a la MISMA cámara
+        if (wasCameraConnected && cameraHandler.getDeviceInfo().equals("No disponible") && lastConnectedIdentity != null) {
+            intentarAutoReconectar();
+        }
+    }
+
+    private ConnectionStatusListener getConnectionStatusListener() {
+        return errorCode -> {
+            runOnUiThread(() -> {
+                Log.e(TAG, "Cámara desconectada: " + errorCode);
+                informacion.setText("Cámara desconectada (" + errorCode + ")");
+                isCameraDisconnected = true;
+                intentarReconectarContinuamente();
+            });
+        };
+    }
+
+    private void intentarAutoReconectar() {
+        if (autoReconnectInProgress) return;  // evita múltiples intentos simultáneos
+        autoReconnectInProgress = true;
+        informacion.setText("Buscando la cámara anterior…");
+
+        // Escanear rápido en segundo plano (máx 5 s)
+        cameraHandler.startDiscovery(new DiscoveryEventListener() {
+            @Override
+            public void onCameraFound(DiscoveredCamera discoveredCamera) {
+                // ¿Es la misma cámara (por deviceId)?
+                if (discoveredCamera.getIdentity().deviceId.equals(lastConnectedIdentity.deviceId)) {
+                    runOnUiThread(() -> informacion.setText("Reconectando automáticamente…"));
+                    cameraHandler.stopDiscovery(discoveryStatusListener);
+                    connect(discoveredCamera.getIdentity());
+                    autoReconnectInProgress = false;
+                }
+            }
+
+            @Override
+            public void onDiscoveryError(CommunicationInterface comm, ErrorCode errorCode) {
+                runOnUiThread(() -> informacion.setText("Error al buscar cámara (" + errorCode + ")"));
+                autoReconnectInProgress = false;
+            }
+        }, discoveryStatusListener);
+
+        // Cancela búsqueda si no aparece en 5 s
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (autoReconnectInProgress) {
+                cameraHandler.stopDiscovery(discoveryStatusListener);
+                informacion.setText("No se encontró la cámara. Pulsa Conectar para intentar manualmente.");
+                autoReconnectInProgress = false;
+            }
+        }, 5000);
+    }
+
+    private void intentarReconectarContinuamente() {
+        if (isAutoRecoveryActive || lastConnectedIdentity == null) return;
+
+        isAutoRecoveryActive = true;
+        informacion.setText("Buscando cámara para reconectar...");
+
+        cameraHandler.startDiscovery(new DiscoveryEventListener() {
+            @Override
+            public void onCameraFound(DiscoveredCamera discoveredCamera) {
+                if (discoveredCamera.getIdentity().deviceId.equals(lastConnectedIdentity.deviceId)) {
+                    cameraHandler.stopDiscovery(discoveryStatusListener);
+                    runOnUiThread(() -> {
+                        informacion.setText("Reconectando a la cámara...");
+                        connect(discoveredCamera.getIdentity());
+                        isCameraDisconnected = false;
+                        isAutoRecoveryActive = false;
+                    });
+                }
+            }
+
+            @Override
+            public void onDiscoveryError(CommunicationInterface comm, ErrorCode errorCode) {
+                runOnUiThread(() -> informacion.setText("Error en búsqueda: " + errorCode));
+                isAutoRecoveryActive = false;
+            }
+        }, discoveryStatusListener);
+
+        // Cancelar reconexión si no se encuentra en X tiempo
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (isAutoRecoveryActive) {
+                cameraHandler.stopDiscovery(discoveryStatusListener);
+                runOnUiThread(() -> informacion.setText("No se encontró cámara. Intenta reconectar manualmente."));
+                isAutoRecoveryActive = false;
+            }
+        }, RECONNECTION_TIMEOUT_MS);
+    }
+
 
     private void showInitialDialog() {
         new AlertDialog.Builder(this)
@@ -144,6 +285,42 @@ public class MainActivity extends AppCompatActivity {
                     startDiscovery();
                     showDiscoveryDialog();
                 }).show();
+    }
+
+
+    private static final int REQUEST_PICK_IMAGE = 1001;
+
+    private void abrirGaleria() {
+        Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        intent.setType("image/*");
+        pickImageLauncher.launch(intent);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == REQUEST_PICK_IMAGE && resultCode == RESULT_OK && data != null) {
+            Uri selectedImageUri = data.getData();
+            if (selectedImageUri != null) {
+                Intent intent = new Intent(this, InferenceActivity.class);
+                intent.putExtra("imageUri", selectedImageUri.toString());
+                startActivity(intent);
+            }
+        }
+    }
+
+    private void mostrarDialogoReconectar() {
+        new AlertDialog.Builder(this)
+                .setTitle("Reconexión requerida")
+                .setMessage("La cámara se desconectó mientras la app estaba en segundo plano. ¿Deseas reconectarla?")
+                .setCancelable(false)
+                .setPositiveButton("Reconectar", (dialog, which) -> {
+                    startDiscovery();
+                    showDiscoveryDialog();
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
     }
 
     private void startDiscovery() {
@@ -203,15 +380,37 @@ public class MainActivity extends AppCompatActivity {
     private void doConnect(Identity identity) {
         new Thread(() -> {
             try {
-                cameraHandler.connect(identity, errorCode ->
-                        runOnUiThread(() -> informacion.setText("Desconectado (" + errorCode + ")")));
-                runOnUiThread(() -> informacion.setText("Conectado: " + identity.deviceId));
+                cameraHandler.connect(identity, getConnectionStatusListener());
+
+                runOnUiThread(() -> {
+                    String deviceInfo = cameraHandler.getDeviceInfo();
+                    informacion.setText("Reconectado a:\n" + deviceInfo);
+                    lastConnectedIdentity = identity;
+                    wasCameraConnected = true;
+                    isCameraDisconnected = false;
+                    isAutoRecoveryActive = false;
+
+                    Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                    if (vibrator != null && vibrator.hasVibrator()) {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            vibrator.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE));
+                        } else {
+                            vibrator.vibrate(200);
+                        }
+                    }
+
+                    Snackbar.make(findViewById(R.id.layout_main), "Reconectado exitosamente a la cámara", Snackbar.LENGTH_SHORT).show();
+                });
+
+
                 cameraHandler.startStream(streamDataListener);
+
             } catch (IOException e) {
                 runOnUiThread(() -> informacion.setText("Error: " + e.getMessage()));
             }
         }).start();
     }
+
 
     private void disconnect() {
         connectedIdentity = null;
@@ -243,6 +442,7 @@ public class MainActivity extends AppCompatActivity {
                 connectButton.setEnabled(true);
                 disconnectButton.setEnabled(true);
                 nucButton.setEnabled(true);
+                pickButton.setEnabled(true);
                 captureButton.setEnabled(true);
                 informacion.setText("Cámara detectada");
             });
@@ -269,7 +469,7 @@ public class MainActivity extends AppCompatActivity {
                 ultimoMsxBitmap = poll.msxBitmap;
                 msxImage.setImageBitmap(poll.msxBitmap);
                 thermalScale.setImageBitmap(poll.dcBitmap);
-                informacion.setText(poll.inforacion);
+                informacion.setText(poll.informacion);
             }
         });
     };
@@ -288,10 +488,14 @@ public class MainActivity extends AppCompatActivity {
             out.flush();
             out.close();
 
+            isSwitchingToInference = true;
+            //guardarImagenEnGaleria();
+            guardarBitmapEnGaleria(ultimoMsxBitmap);
+
             // Pasar la URI al InferenceActivity
-            Intent intent = new Intent(this, InferenceActivity.class);
-            intent.putExtra("imageUri", Uri.fromFile(file).toString());
-            startActivity(intent);
+            //Intent intent = new Intent(this, InferenceActivity.class);
+            //intent.putExtra("imageUri", Uri.fromFile(file).toString());
+            //startActivity(intent);
 
         } catch (IOException e) {
             Toast.makeText(this, "Error al guardar imagen temporal", Toast.LENGTH_SHORT).show();
@@ -313,8 +517,9 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Imagen guardada", Toast.LENGTH_SHORT).show();
 
             Intent intent = new Intent(this, InferenceActivity.class);
-            intent.putExtra("capturedImage", bitmap);
+            intent.putExtra("imageUri", uri.toString()); // ✅ pasas el URI, no el bitmap
             startActivity(intent);
+
 
         } catch (IOException e) {
             Toast.makeText(this, "Error al guardar imagen", Toast.LENGTH_SHORT).show();
