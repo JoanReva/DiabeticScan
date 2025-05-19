@@ -42,11 +42,14 @@ public class InferenceActivity extends AppCompatActivity {
         if (uriString != null) {
             try {
                 Uri imageUri = Uri.parse(uriString);
-                Bitmap bitmap = BitmapFactory.decodeStream(getContentResolver().openInputStream(imageUri));
-                imageView.setImageBitmap(bitmap);
-
+                //Bitmap bitmap = BitmapFactory.decodeStream(getContentResolver().openInputStream(imageUri));
+                //imageView.setImageBitmap(bitmap);
+                Bitmap originalBitmap = BitmapFactory.decodeStream(getContentResolver().openInputStream(imageUri));
+                Bitmap segmentedBitmap = segmentImage(originalBitmap);
+                imageView.setImageBitmap(segmentedBitmap);
                 tflite = new Interpreter(loadModelFile());
-                String result = runInference(bitmap);
+                //String result = runInference(bitmap);
+                String result = runInference(segmentedBitmap);
                 resultText.setText(result);
 
             } catch (Exception e) {
@@ -98,5 +101,38 @@ public class InferenceActivity extends AppCompatActivity {
         }
 
         return buffer;
+    }
+
+    private Bitmap segmentImage(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        Bitmap result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+
+        int[] pixels = new int[width * height];
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+
+        for (int i = 0; i < pixels.length; i++) {
+            int color = pixels[i];
+            int r = (color >> 16) & 0xFF;
+            int g = (color >> 8) & 0xFF;
+            int b = color & 0xFF;
+
+            float[] hsv = new float[3];
+            android.graphics.Color.RGBToHSV(r, g, b, hsv);
+
+            // Detección de azul: tono entre 180° y 250° (0.5 a 0.7 en escala 0–1)
+            //boolean isBlue = hsv[0] >= 180 && hsv[0] <= 250 && hsv[1] > 0.3;
+            boolean isBlue = hsv[0] >= 180 && hsv[0] <= 250 && hsv[1] > 0.3;
+            //boolean isBlue = hsv[0] >= 160 && hsv[0] <= 260 && hsv[1] >= 0.2 && hsv[2] >= 0.2;
+
+            if (isBlue) {
+                pixels[i] = android.graphics.Color.BLACK;  // Fondo azul → negro
+            } else {
+                pixels[i] = android.graphics.Color.rgb(r, g, b);  // Conservar objeto
+            }
+        }
+
+        result.setPixels(pixels, 0, width, 0, 0, width, height);
+        return result;
     }
 }
