@@ -32,29 +32,15 @@ import java.io.IOException;
 import java.util.LinkedList;
 import java.util.Objects;
 
+/**
+ * Clase encargada del manejo de la cámara FLIR.
+ * Realiza conexión, descubrimiento, NUC, y streaming térmico.
+ */
 public class CameraHandlerPrincipal {
 
-    private StreamDataListener streamDataListener;
-    private Context context;
-
-    // Constructor para pasar el contexto (actividad)
-    public CameraHandlerPrincipal(Context context) {
-        this.context = context;
-    }
-
     public interface StreamDataListener {
-        void images(FrameDataHolder dataHolder);
-
-        void images(Bitmap msxBitmap, Bitmap dcBitmap, String informacion);
+        void images(Bitmap thermalImage, Bitmap thermalScale, String information);
     }
-
-    // Cámaras FLIR descubiertas
-    LinkedList<Identity> foundCameraIdentities = new LinkedList<>();
-
-    // Cámara FLIR conectada
-    private Camera camera;
-    private Stream connectedStream;
-    private ThermalStreamer streamer;
 
     public interface DiscoveryStatus {
         void started();
@@ -62,152 +48,145 @@ public class CameraHandlerPrincipal {
         void stopped();
     }
 
-    /**
-     * Inicia la búsqueda de dispositivos USB y emuladores
-     */
-    public void startDiscovery(DiscoveryEventListener cameraDiscoveryListener, DiscoveryStatus discoveryStatus) {
-        DiscoveryFactory.getInstance().scan(cameraDiscoveryListener, CommunicationInterface.USB);
-        discoveryStatus.started();
+    private final Context context;
+    private StreamDataListener streamDataListener;
+
+    private final LinkedList<Identity> foundCameraIdentities = new LinkedList<>();
+    private Camera camera;
+    private Stream connectedStream;
+    private ThermalStreamer streamer;
+
+    public CameraHandlerPrincipal(Context context) {
+        this.context = context;
     }
 
     /**
-     * Detiene la búsqueda de dispositivos USB y emuladores
+     * Inicia descubrimiento USB
      */
-    public void stopDiscovery(DiscoveryStatus discoveryStatus) {
+    public void startDiscovery(DiscoveryEventListener listener, DiscoveryStatus callback) {
+        DiscoveryFactory.getInstance().scan(listener, CommunicationInterface.USB);
+        callback.started();
+    }
+
+    /**
+     * Detiene descubrimiento USB
+     */
+    public void stopDiscovery(DiscoveryStatus callback) {
         DiscoveryFactory.getInstance().stop(CommunicationInterface.USB);
-        discoveryStatus.stopped();
+        callback.stopped();
     }
 
     /**
-     * Conecta a una cámara usando su identidad
+     * Conecta a una cámara FLIR
      */
-    public synchronized void connect(Identity identity, ConnectionStatusListener connectionStatusListener) throws IOException {
-        Log.d(TAG, "Conectando a la cámara con identidad: " + identity);
+    public synchronized void connect(Identity identity, ConnectionStatusListener statusListener) throws IOException {
+        Log.d(TAG, "Conectando a cámara: " + identity);
         camera = new Camera();
-        camera.connect(identity, connectionStatusListener, new ConnectParameters());
+        camera.connect(identity, statusListener, new ConnectParameters());
     }
 
     /**
-     * Desconecta la cámara actual
+     * Desconecta cámara FLIR
      */
     public synchronized void disconnect() {
         Log.d(TAG, "Desconectando cámara...");
-        if (camera == null) {
-            return;
-        }
-        if (connectedStream == null) {
-            return;
-        }
+        if (camera == null) return;
 
-        if (connectedStream.isStreaming()) {
+        if (connectedStream != null && connectedStream.isStreaming()) {
             connectedStream.stop();
         }
+
         camera.disconnect();
         camera = null;
     }
 
     /**
-     * Ejecuta una calibración NUC (corrección de no uniformidad)
+     * Ejecuta calibración térmica NUC (Non-Uniformity Correction)
      */
     public synchronized void performNuc() {
         Log.d(TAG, "Ejecutando NUC...");
-        if (camera == null) {
-            return;
-        }
+        if (camera == null) return;
+
         RemoteControl rc = camera.getRemoteControl();
-        if (rc == null) {
-            return;
+        if (rc == null) return;
+
+        Calibration calibration = rc.getCalibration();
+        if (calibration != null) {
+            calibration.nuc().executeSync();
         }
-        Calibration calib = rc.getCalibration();
-        if (calib == null) {
-            return;
-        }
-        calib.nuc().executeSync();
     }
 
-    public void actualizarTextoVista() {
-        // Asegúrate de que el contexto sea una actividad
+    /**
+     * Muestra texto desde el contexto si es una actividad
+     */
+    public void mostrarTextoPaletasCargadas() {
         if (context instanceof Activity) {
             Activity activity = (Activity) context;
-            TextView textView = activity.findViewById(R.id.informacion);
-            textView.setText("Paletas Cargadas");
+            TextView textView = activity.findViewById(R.id.text_info);
+            textView.setText("Paletas cargadas correctamente.");
         }
     }
 
-    // Inicia el streaming de imágenes térmicas desde una FLIR ONE o un emulador
+
+    /**
+     * Inicia el flujo de imágenes térmicas desde la cámara
+     */
     public synchronized void startStream(StreamDataListener listener) {
         this.streamDataListener = listener;
+
         if (camera == null || !camera.isConnected()) {
-            Log.e(TAG, "Error al iniciar el stream, la cámara es nula o no está conectada");
+            Log.e(TAG, "No se puede iniciar el stream: cámara nula o desconectada.");
             return;
         }
+
         connectedStream = camera.getStreams().get(0);
-        if (connectedStream.isThermal()) {
-            streamer = new ThermalStreamer(connectedStream);
-        } else {
-            Log.e(TAG, "Error: no hay flujo térmico disponible para esta cámara");
+        if (!connectedStream.isThermal()) {
+            Log.e(TAG, "Stream no es térmico.");
             return;
         }
+
+        streamer = new ThermalStreamer(connectedStream);
 
         connectedStream.start(
                 unused -> {
                     streamer.update();
-                    final Bitmap[] dcBitmap = new Bitmap[1];
-                    //0 iron ---Flir
-                    //1 artic --- Flir
-                    //2 blackhot
-                    //3 bw -- Flir gris
-                    //4 coldest -- Flir
-                    //5 wheel_redhot
-                    //6 colorwheel6
-                    //7 colorwheel12
-                    //8 doublerainbow2
-                    //9 lava --- Flir
-                    //10 rainbow ---Flir
-                    //11 rainicHC
-                    //12 whitehot
-                    //13 Hottset -- FLir
+
+                    final Bitmap[] thermalScaleBitmap = new Bitmap[1];
                     final String[] info = new String[1];
-                    final Bitmap[] scaleBitmap = new Bitmap[1];
-                    Palette palette = PaletteManager.getDefaultPalettes().get(10);
+
+                    Palette palette = PaletteManager.getDefaultPalettes().get(10); // rainbow
+
                     streamer.withThermalImage(thermalImage -> {
                         Objects.requireNonNull(thermalImage.getFusion()).setFusionMode(FusionMode.THERMAL_ONLY);
-                        //Palette inverPalette=palette.getInverted();
-
                         thermalImage.setPalette(palette);
 
+                        ImageColorizer colorizer = new ImageColorizer(thermalImage);
+                        colorizer.setAutoScale(true);
+                        colorizer.setRenderScale(true);
+                        colorizer.update();
 
-                        ImageColorizer colorize = new ImageColorizer(thermalImage);
-                        colorize.setAutoScale(true);
-                        colorize.setRenderScale(true);
-                        colorize.update();
-                        scaleBitmap[0] = BitmapAndroid.createBitmap(Objects.requireNonNull(colorize.getScaleImage())).getBitMap();
+                        thermalScaleBitmap[0] = BitmapAndroid.createBitmap(
+                                Objects.requireNonNull(colorizer.getScaleImage())).getBitMap();
 
                         info[0] = palette.toString();
-                        //info[0]="Max:"+thermalImage.getScale().getRangeMax()+" Min:"+thermalImage.getScale().getRangeMin();
-                        dcBitmap[0] = BitmapAndroid.createBitmap(
-                                Objects.requireNonNull(thermalImage.getFusion().getPhoto())).getBitMap();
                     });
 
-
-                    final Bitmap thermalPixels = BitmapAndroid.createBitmap(streamer.getImage()).getBitMap();
-                    // Enviar las imágenes al listener
-                    streamDataListener.images(thermalPixels, scaleBitmap[0], info[0]);
+                    Bitmap thermalBitmap = BitmapAndroid.createBitmap(streamer.getImage()).getBitMap();
+                    streamDataListener.images(thermalBitmap, thermalScaleBitmap[0], info[0]);
                 },
                 error -> Log.e(TAG, "Error durante el streaming: " + error)
         );
-
     }
 
     /**
-     * Agrega una cámara descubierta a la lista de cámaras encontradas
+     * Agrega cámara descubierta
      */
     public void add(Identity identity) {
         foundCameraIdentities.add(identity);
     }
 
     /**
-     * Devuelve la primera cámara FLIR ONE conectada por USB
+     * Retorna la primera cámara FLIR encontrada por USB
      */
     @Nullable
     public Identity getFlirOne() {
@@ -221,17 +200,14 @@ public class CameraHandlerPrincipal {
      * Obtiene información del dispositivo conectado
      */
     public String getDeviceInfo() {
-        if (camera == null) {
-            return "No disponible";
-        }
+        if (camera == null) return "No disponible";
+
         RemoteControl rc = camera.getRemoteControl();
-        if (rc == null) {
-            return "No disponible";
-        }
-        CameraInformation ci = rc.cameraInformation().getSync();
-        if (ci == null) {
-            return "No disponible";
-        }
-        return ci.displayName + ", SN: " + ci.serialNumber;
+        if (rc == null) return "No disponible";
+
+        CameraInformation info = rc.cameraInformation().getSync();
+        if (info == null) return "No disponible";
+
+        return info.displayName + ", SN: " + info.serialNumber;
     }
 }

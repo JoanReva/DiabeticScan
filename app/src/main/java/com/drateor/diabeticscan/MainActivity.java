@@ -3,6 +3,7 @@ package com.drateor.diabeticscan;
 import android.app.AlertDialog;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
@@ -33,6 +34,8 @@ import com.flir.thermalsdk.live.discovery.DiscoveredCamera;
 import com.flir.thermalsdk.live.discovery.DiscoveryEventListener;
 import com.flir.thermalsdk.log.ThermalLog;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -40,66 +43,70 @@ import java.util.concurrent.LinkedBlockingQueue;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
-    private Identity connectedIdentity = null;
 
+    private Identity connectedIdentity;
     private CameraHandlerPrincipal cameraHandler;
     private final LinkedBlockingQueue<FrameDataHolder> framesBuffer = new LinkedBlockingQueue<>(21);
     private final UsbPermissionHandler usbPermissionHandler = new UsbPermissionHandler();
-    private AlertDialog discoveryDialog;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
     private boolean cameraFound = false;
+    private AlertDialog discoveryDialog;
     private Bitmap ultimoMsxBitmap;
 
     private TextView informacion;
-    private ImageView msxImage, thermal_scale, imagenCapturada;
-    private Button connectButton, disconnectButton, nucButton, capturaButton;
+    private ImageView msxImage, thermalScale, imagenCapturada;
+    private Button connectButton, disconnectButton, nucButton, captureButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
+
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.layout_main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
             return insets;
         });
 
         ThermalSdkAndroid.init(getApplicationContext(), ThermalLog.LogLevel.DEBUG);
-
-
         cameraHandler = new CameraHandlerPrincipal(this);
 
-        msxImage = findViewById(R.id.msx_image);
-        thermal_scale = findViewById(R.id.thermal_scale);
-        imagenCapturada = findViewById(R.id.imagen_capturada);
-        informacion = findViewById(R.id.informacion);
-        connectButton = findViewById(R.id.connect_flir_one);
-        disconnectButton = findViewById(R.id.disconnect_flir_one);
-        nucButton = findViewById(R.id.nuc);
-        capturaButton = findViewById(R.id.captura);
+        initUI();
+        showInitialDialog();
+    }
 
-        capturaButton.setOnClickListener(v -> snapShotImage());
+    private void initUI() {
+        msxImage = findViewById(R.id.image_msx);
+        thermalScale = findViewById(R.id.image_thermal_scale);
+        imagenCapturada = findViewById(R.id.image_thumbnail);
+        informacion = findViewById(R.id.text_info);
+
+        connectButton = findViewById(R.id.button_connect);
+        disconnectButton = findViewById(R.id.button_disconnect);
+        nucButton = findViewById(R.id.button_nuc);
+        captureButton = findViewById(R.id.button_capture);
 
         connectButton.setEnabled(false);
         disconnectButton.setEnabled(false);
         nucButton.setEnabled(false);
-        capturaButton.setEnabled(false);
+        captureButton.setEnabled(false);
 
-        showInitialDialog();
+        captureButton.setOnClickListener(v -> snapShotImage());
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        Toast.makeText(this, "La aplicación está en segundo plano. Cerrando conexión.", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Cerrando conexión...", Toast.LENGTH_SHORT).show();
         disconnect();
     }
 
     private void showInitialDialog() {
         new AlertDialog.Builder(this)
                 .setTitle("Conectar cámara")
-                .setMessage("Por favor, conecte su cámara FLIR al dispositivo y presione Aceptar para continuar.")
+                .setMessage("Conecte su cámara FLIR y presione Aceptar.")
                 .setCancelable(false)
                 .setPositiveButton("Aceptar", (dialog, which) -> {
                     dialog.dismiss();
@@ -112,7 +119,7 @@ public class MainActivity extends AppCompatActivity {
     private void showDiscoveryDialog() {
         discoveryDialog = new AlertDialog.Builder(this)
                 .setTitle("Buscando cámaras...")
-                .setMessage("Por favor, espere mientras buscamos dispositivos FLIR conectados.")
+                .setMessage("Esperando dispositivos FLIR...")
                 .setCancelable(false)
                 .create();
         discoveryDialog.show();
@@ -123,19 +130,17 @@ public class MainActivity extends AppCompatActivity {
                 showNoCameraFoundDialog();
             } else {
                 stopDiscovery();
-                if (discoveryDialog.isShowing()) discoveryDialog.dismiss();
             }
-        }, 10_000);
+        }, 10000);
     }
 
     private void showNoCameraFoundDialog() {
         new AlertDialog.Builder(this)
                 .setTitle("Cámara no encontrada")
-                .setMessage("No se detectó ninguna cámara conectada.\n¿Desea reintentar la búsqueda?")
+                .setMessage("¿Desea reintentar la búsqueda?")
                 .setCancelable(false)
                 .setPositiveButton("Reintentar", (dialog, which) -> {
                     cameraFound = false;
-                    dialog.dismiss();
                     startDiscovery();
                     showDiscoveryDialog();
                 }).show();
@@ -163,8 +168,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void connect(Identity identity) {
         stopDiscovery();
+
         if (connectedIdentity != null || identity == null) {
-            Toast.makeText(this, "No se puede conectar: cámara ocupada o no disponible", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "No se puede conectar: cámara no disponible", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -189,16 +195,16 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @Override
-        public void error(UsbPermissionHandler.UsbPermissionListener.ErrorType errorType, @NonNull Identity identity) {
-            Toast.makeText(MainActivity.this, "Error al pedir permiso", Toast.LENGTH_SHORT).show();
+        public void error(ErrorType errorType, @NonNull Identity identity) {
+            Toast.makeText(MainActivity.this, "Error de permisos USB", Toast.LENGTH_SHORT).show();
         }
     };
 
     private void doConnect(Identity identity) {
         new Thread(() -> {
             try {
-                cameraHandler.connect(identity, errorCode -> runOnUiThread(() ->
-                        informacion.setText("Desconectado (" + errorCode + ")")));
+                cameraHandler.connect(identity, errorCode ->
+                        runOnUiThread(() -> informacion.setText("Desconectado (" + errorCode + ")")));
                 runOnUiThread(() -> informacion.setText("Conectado: " + identity.deviceId));
                 cameraHandler.startStream(streamDataListener);
             } catch (IOException e) {
@@ -237,7 +243,7 @@ public class MainActivity extends AppCompatActivity {
                 connectButton.setEnabled(true);
                 disconnectButton.setEnabled(true);
                 nucButton.setEnabled(true);
-                capturaButton.setEnabled(true);
+                captureButton.setEnabled(true);
                 informacion.setText("Cámara detectada");
             });
         }
@@ -245,50 +251,50 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onDiscoveryError(CommunicationInterface comm, ErrorCode errorCode) {
             stopDiscovery();
-            if (discoveryDialog.isShowing()) discoveryDialog.dismiss();
             runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                    "Error de descubrimiento: " + errorCode, Toast.LENGTH_LONG).show());
+                    "Error en la búsqueda: " + errorCode, Toast.LENGTH_LONG).show());
         }
     };
 
-    private final CameraHandlerPrincipal.StreamDataListener streamDataListener = new CameraHandlerPrincipal.StreamDataListener() {
-        @Override
-        public void images(Bitmap msxBitmap, Bitmap dcBitmap, String info) {
-            try {
-                framesBuffer.put(new FrameDataHolder(msxBitmap, dcBitmap, info));
-            } catch (InterruptedException e) {
-                Log.e(TAG, "Buffer lleno", e);
+    private final CameraHandlerPrincipal.StreamDataListener streamDataListener = (msxBitmap, dcBitmap, info) -> {
+        try {
+            framesBuffer.put(new FrameDataHolder(msxBitmap, dcBitmap, info));
+        } catch (InterruptedException e) {
+            Log.e(TAG, "Buffer lleno", e);
+        }
+
+        runOnUiThread(() -> {
+            FrameDataHolder poll = framesBuffer.poll();
+            if (poll != null) {
+                ultimoMsxBitmap = poll.msxBitmap;
+                msxImage.setImageBitmap(poll.msxBitmap);
+                thermalScale.setImageBitmap(poll.dcBitmap);
+                informacion.setText(poll.inforacion);
             }
-
-            runOnUiThread(() -> {
-                FrameDataHolder poll = framesBuffer.poll();
-                if (poll != null) {
-                    ultimoMsxBitmap = poll.msxBitmap;
-                    msxImage.setImageBitmap(poll.msxBitmap);
-                    thermal_scale.setImageBitmap(poll.dcBitmap);
-                    informacion.setText(poll.inforacion);
-                }
-            });
-        }
-
-        @Override
-        public void images(FrameDataHolder dataHolder) {
-            runOnUiThread(() -> {
-                ultimoMsxBitmap = dataHolder.msxBitmap;
-                msxImage.setImageBitmap(dataHolder.msxBitmap);
-                thermal_scale.setImageBitmap(dataHolder.dcBitmap);
-                informacion.setText(dataHolder.inforacion);
-            });
-        }
+        });
     };
 
     private void snapShotImage() {
-        if (ultimoMsxBitmap != null) {
-            guardarBitmapEnGaleria(ultimoMsxBitmap);
-            imagenCapturada.setVisibility(View.VISIBLE);
-            imagenCapturada.setImageBitmap(ultimoMsxBitmap);
-        } else {
+        if (ultimoMsxBitmap == null) {
             Toast.makeText(this, "No hay imagen para guardar", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        try {
+            // Guardar en archivo temporal
+            File file = new File(getCacheDir(), "captured.jpg");
+            FileOutputStream out = new FileOutputStream(file);
+            ultimoMsxBitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
+            out.flush();
+            out.close();
+
+            // Pasar la URI al InferenceActivity
+            Intent intent = new Intent(this, InferenceActivity.class);
+            intent.putExtra("imageUri", Uri.fromFile(file).toString());
+            startActivity(intent);
+
+        } catch (IOException e) {
+            Toast.makeText(this, "Error al guardar imagen temporal", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -304,9 +310,15 @@ public class MainActivity extends AppCompatActivity {
         try (OutputStream outputStream = resolver.openOutputStream(uri)) {
             bitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream);
             if (outputStream != null) outputStream.flush();
-            Toast.makeText(this, "Imagen guardada en Galería", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Imagen guardada", Toast.LENGTH_SHORT).show();
+
+            Intent intent = new Intent(this, InferenceActivity.class);
+            intent.putExtra("capturedImage", bitmap);
+            startActivity(intent);
+
         } catch (IOException e) {
             Toast.makeText(this, "Error al guardar imagen", Toast.LENGTH_SHORT).show();
         }
     }
+
 }
